@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
-import os, hmac, fcntl, struct, crccheck, periphery
+import os, hmac, array, fcntl, struct, crccheck
 
-class PIA(periphery.I2C):
-	I2C_SLAVE = 0x0703
+class PIA:
+	_I2C_SLAVE = 0x0703
+	_I2C_FUNCS = 0x0705
+	_I2C_FUNC_I2C = 0x1
 
 	HEADER = bytearray(b"\x55\xAA\x00")
 	MAX_LENGTH = 0x110
@@ -12,9 +14,31 @@ class PIA(periphery.I2C):
 	CMD_CONFIGURE = 0x02
 
 	def __init__(self, devpath="/dev/i2c-2", address=0x28):
-		super().__init__(devpath=devpath)
-		self.address = address
+		self.devpath, self.address = devpath, address
 		self.crc = crccheck.crc.CrcCcitt()
+		self._fd = None
+		self.open()
+
+	def __del__(self):
+		self.close()
+
+	def open(self):
+		self._fd = os.open(self.devpath, os.O_RDWR)
+
+		buf = array.array('I', [0])
+		try: fcntl.ioctl(self._fd, self._I2C_FUNCS, buf, True)
+		except OSError: self.close(); raise
+
+		if (not buf[0] & self._I2C_FUNC_I2C):
+			self.close()
+			raise ValueError(f"I2C is not supported on {self.devpath}.")
+
+		fcntl.ioctl(self._fd, self._I2C_SLAVE, self.address)
+
+	def close(self):
+		if (self._fd is not None):
+			os.close(self._fd)
+			self._fd = None
 
 	def read(self, length):
 		return os.read(self._fd, length)
@@ -33,8 +57,6 @@ class PIA(periphery.I2C):
 
 		print('<', *(f"{i:02x}" for i in payload))
 
-		fcntl.ioctl(self._fd, self.I2C_SLAVE, self.address)
-
 		# write the data
 		self.write(bytes((self.CMD_TRANSMIT, *payload)))
 
@@ -43,8 +65,6 @@ class PIA(periphery.I2C):
 			self.read(1)
 
 	def receive(self):
-		fcntl.ioctl(self._fd, self.I2C_SLAVE, self.address)
-
 		# sync with the sensor
 		x55 = bool()
 		while (True):
